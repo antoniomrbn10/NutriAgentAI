@@ -18,7 +18,7 @@ st.title(f"🥗 {AGENT_NAME}")
 st.caption(f"Asistente experto en {DOMAIN_NAME} · RAG condicional con Gemini + ChromaDB + LangGraph")
 
 
-@st.cache_resource(show_spinner="Cargando base de conocimiento...")
+@st.cache_resource(show_spinner="Cargando base de conocimiento (la primera vez puede tardar unos minutos)...")
 def get_agent():
     return build_agent(build_vectorstore())
 
@@ -27,7 +27,13 @@ if not os.getenv("GOOGLE_API_KEY"):
     st.error("Falta GOOGLE_API_KEY (archivo .env o Secrets de Streamlit).")
     st.stop()
 
-agent = get_agent()
+try:
+    agent = get_agent()
+except Exception as e:  # noqa: BLE001
+    st.error(f"No se pudo iniciar el agente: {type(e).__name__}: {str(e)[:400]}")
+    st.info("Si es un error de cuota (429), espera unos minutos y recarga la página: "
+            "la indexación continúa donde se quedó.")
+    st.stop()
 
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid.uuid4())
