@@ -40,7 +40,7 @@ LLM_MODEL = "gemini-2.5-flash"
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 # --- Base vectorial ----------------------------------------------------------
-DOCS_DIR = "docs"
+DOCS_DIR = "nutridocs"
 CHROMA_DIR = "chroma_db"
 COLLECTION_NAME = "conocimiento_experto"
 CHUNK_SIZE = 1000        # caracteres por fragmento
