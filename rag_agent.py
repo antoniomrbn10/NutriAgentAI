@@ -35,17 +35,23 @@ load_dotenv()  # lee GOOGLE_API_KEY de .env si existe (nunca va en el código)
 DOMAIN_NAME = "nutrición y alimentación saludable"
 AGENT_NAME = "NutriGuía"
 
-# --- Modelos (verifica en la documentación de Gemini que siguen vigentes) ----
-LLM_MODEL = "gemini-2.5-flash"
+# --- Modelos (Google los renueva a menudo: si ves un 404, mira ai.google.dev/gemini-api/docs/models) ---
+LLM_MODEL = "gemini-3.5-flash-lite"          # ligero: suele tener más cuota en el plan gratuito
+LLM_FALLBACK_MODEL = "gemini-3.1-flash-lite"  # respaldo si el principal falla (cuota, saturación...)
+# Con facturación activa puedes subir a "gemini-3.8-flash" como LLM_MODEL para respuestas más potentes.
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 # --- Base vectorial ----------------------------------------------------------
-DOCS_DIR = "nutridocs"
-CHROMA_DIR = "chroma_db"
+try:
+    BASE_DIR = Path(__file__).resolve().parent   # junto a este archivo (local, Streamlit Cloud)
+except NameError:                                # notebook: no existe __file__
+    BASE_DIR = Path.cwd()
+DOCS_DIR = str(BASE_DIR / "nutridocs")
+CHROMA_DIR = str(BASE_DIR / "chroma_db")
 COLLECTION_NAME = "conocimiento_experto"
 CHUNK_SIZE = 1000        # caracteres por fragmento
 CHUNK_OVERLAP = 150      # solapamiento para no cortar ideas por la mitad
-BATCH_SIZE = 50          # fragmentos por llamada de embeddings (cuotas del plan gratuito)
+BATCH_SIZE = 20          # fragmentos por llamada de embeddings (cuotas del plan gratuito)
 
 # --- Recuperación ------------------------------------------------------------
 TOP_K = 4                # fragmentos que se recuperan
@@ -85,8 +91,11 @@ def load_documents(docs_dir: str = DOCS_DIR) -> List[Document]:
         docs.extend(loaded)
         print(f"  · {path.name}: {len(loaded)} páginas/filas útiles")
     if not docs:
+        found = sorted(p.name for p in Path(docs_dir).rglob("*")) if Path(docs_dir).exists() else []
         raise FileNotFoundError(
-            f"No hay documentos en '{docs_dir}/'. Añade al menos 3 PDFs/CSVs/TXT (~20 páginas)."
+            f"No hay documentos legibles en '{docs_dir}' (existe: {Path(docs_dir).exists()}; "
+            f"contenido: {found or 'vacío'}). Añade al menos 3 PDFs/CSVs/TXT (~20 páginas) "
+            "a la carpeta docs/ del repositorio (no basta con tenerlos en tu ordenador)."
         )
     return docs
 
@@ -101,15 +110,12 @@ def _new_chroma() -> Chroma:
 
 
 def build_vectorstore(rebuild: bool = False) -> Chroma:
-    """Devuelve la colección de Chroma; la indexa solo si está vacía (o si rebuild=True)."""
+    """Devuelve la colección de Chroma indexando solo los fragmentos que falten.
+    Es reanudable: si una ejecución se corta (cuota, red), la siguiente continúa donde se quedó."""
     vs = _new_chroma()
     if rebuild and vs._collection.count() > 0:
         vs.delete_collection()
         vs = _new_chroma()
-
-    if vs._collection.count() > 0:
-        print(f"Colección ya indexada: {vs._collection.count()} fragmentos (se reutiliza).")
-        return vs
 
     print("Cargando documentos...")
     docs = load_documents()
@@ -121,23 +127,35 @@ def build_vectorstore(rebuild: bool = False) -> Chroma:
     chunks = splitter.split_documents(docs)
     for i, c in enumerate(chunks):
         c.metadata["chunk_id"] = i
-    print(f"{len(docs)} páginas/filas -> {len(chunks)} fragmentos. Generando embeddings...")
+    ids = [f"chunk-{i}" for i in range(len(chunks))]  # ids estables -> permite reanudar
 
-    for i in range(0, len(chunks), BATCH_SIZE):
-        batch = chunks[i : i + BATCH_SIZE]
-        for attempt in range(4):  # reintentos por si salta el límite de cuota
+    existing = set(vs.get(include=[])["ids"])
+    pending = [(i, c) for i, c in zip(ids, chunks) if i not in existing]
+    if not pending:
+        print(f"Colección completa: {len(chunks)} fragmentos (se reutiliza).")
+        return vs
+
+    print(f"{len(chunks)} fragmentos en total; faltan {len(pending)} por indexar. Generando embeddings...")
+    last_error = None
+    for start in range(0, len(pending), BATCH_SIZE):
+        batch = pending[start : start + BATCH_SIZE]
+        for attempt in range(5):  # reintentos por si salta el límite de cuota
             try:
-                vs.add_documents(batch)
+                vs.add_documents([c for _, c in batch], ids=[i for i, _ in batch])
                 break
             except Exception as e:  # noqa: BLE001
-                wait = 15 * (attempt + 1)
-                print(f"  Error ({type(e).__name__}); reintento en {wait}s...")
+                last_error = e
+                wait = 20 * (attempt + 1)
+                print(f"  Error ({type(e).__name__}: {str(e)[:150]}); reintento en {wait}s...")
                 time.sleep(wait)
         else:
-            raise RuntimeError("No se pudieron generar embeddings tras varios reintentos.")
-        time.sleep(1)
-        print(f"  {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
-    print(f"Indexados {vs._collection.count()} fragmentos en '{CHROMA_DIR}/'.")
+            raise RuntimeError(
+                "No se pudieron generar embeddings tras varios reintentos. "
+                f"Último error: {type(last_error).__name__}: {str(last_error)[:300]}"
+            ) from last_error
+        time.sleep(2)
+        print(f"  {min(start + BATCH_SIZE, len(pending))}/{len(pending)}")
+    print(f"Indexados {vs._collection.count()} fragmentos en '{CHROMA_DIR}'.")
     return vs
 
 
@@ -151,6 +169,7 @@ ROL
 TONO
 - Cercano, claro y breve. Responde en el idioma del usuario (por defecto, español).
 - Explica los términos técnicos la primera vez que los uses. Usa listas solo si ayudan.
+- Saluda solo en el primer mensaje de la conversación; en los siguientes, ve directo a la respuesta.
 
 USO DE LA INFORMACIÓN
 - Cuando recibas un bloque «CONTEXTO RECUPERADO», basa tu respuesta en él y no inventes datos,
@@ -221,10 +240,38 @@ def _format_history(messages, n: int = 6) -> str:
     return "\n".join(lines)
 
 
+def _invoke_with_retry(runnable, payload, tries: int = 4):
+    """Reintenta con espera creciente SOLO ante saturación temporal (503).
+    Un 429 (cuota agotada) o un 404 (modelo inexistente) no se arreglan esperando:
+    se propagan para que el llamador use el modelo de respaldo."""
+    for i in range(tries):
+        try:
+            return runnable.invoke(payload)
+        except Exception as e:  # noqa: BLE001
+            temporal = "503" in str(e) or "UNAVAILABLE" in str(e)
+            if temporal and i < tries - 1:
+                wait = 3 * 2**i  # 3, 6, 12 s
+                print(f"  ⏳ Gemini saturado; reintento {i + 1}/{tries - 1} en {wait}s...")
+                time.sleep(wait)
+                continue
+            raise
+
+
+def _with_fallback(primary, fallback, payload):
+    """Prueba el modelo principal y, si falla, el de respaldo."""
+    try:
+        return _invoke_with_retry(primary, payload)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️ Modelo principal no disponible ({type(e).__name__}); uso el de respaldo.")
+        return _invoke_with_retry(fallback, payload)
+
+
 def build_agent(vectorstore: Chroma):
     """Construye y compila el grafo: router -> (retrieve) -> generate, con memoria."""
-    llm = ChatGoogleGenerativeAI(model=LLM_MODEL, temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
+    llm_fallback = ChatGoogleGenerativeAI(model=LLM_FALLBACK_MODEL)
     router_llm = llm.with_structured_output(RouteDecision)
+    router_fallback = llm_fallback.with_structured_output(RouteDecision)
 
     # Nodo 1: decide si se usa RAG (la "condición" del RAG condicional)
     def route_question(state: AgentState) -> dict:
@@ -234,7 +281,7 @@ def build_agent(vectorstore: Chroma):
             f"\n\nÚLTIMO MENSAJE DEL USUARIO:\n{question}"
         )
         try:
-            d: RouteDecision = router_llm.invoke(prompt)
+            d: RouteDecision = _with_fallback(router_llm, router_fallback, prompt)
             return {"use_rag": d.use_rag, "standalone_query": d.standalone_query or question,
                     "route_reason": d.reason}
         except Exception as e:  # noqa: BLE001  -> ante la duda, consultar la base
@@ -270,7 +317,8 @@ def build_agent(vectorstore: Chroma):
             state["messages"], strategy="last", token_counter=len,
             max_tokens=MAX_HISTORY_MESSAGES, start_on="human", include_system=False,
         )
-        response = llm.invoke([SystemMessage(content=system)] + history)
+        prompt_msgs = [SystemMessage(content=system)] + history
+        response = _with_fallback(llm, llm_fallback, prompt_msgs)
         return {"messages": [response]}
 
     builder = StateGraph(AgentState)
@@ -289,6 +337,16 @@ def build_agent(vectorstore: Chroma):
 
     # MemorySaver guarda el estado por thread_id -> memoria conversacional
     return builder.compile(checkpointer=MemorySaver())
+
+
+def check_models() -> None:
+    """Comprueba que los modelos configurados responden (así un 404 se detecta antes de chatear)."""
+    for name in (LLM_MODEL, LLM_FALLBACK_MODEL):
+        try:
+            _invoke_with_retry(ChatGoogleGenerativeAI(model=name), "Responde solo: ok")
+            print(f"✅ {name} disponible")
+        except Exception as e:  # noqa: BLE001
+            print(f"❌ {name}: {type(e).__name__}: {str(e)[:200]}")
 
 
 def invoke_agent(agent, question: str, thread_id: str = "default") -> dict:
