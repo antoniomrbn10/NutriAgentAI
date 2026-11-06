@@ -4,7 +4,8 @@ Agente conversacional experto en **nutrición y alimentación saludable**, const
 
 > Dominio de ejemplo: se puede cambiar a cualquier otro editando `DOMAIN_*`, `SYSTEM_PROMPT`, `ROUTER_PROMPT` (en `rag_agent.py`) y los documentos de `docs/`.
 ## ENLACE A INTERFAZ DE STREAMLIT: https://nutriagentai-kyiba2pnfad2ltyngnhdkk.streamlit.app/#nutri-guia
-> 
+
+## ENLACE A PRESENTACIÓN: https://docs.google.com/videos/d/1aXVoELhuEAk8nV8w2llUeudkMN9eHQVarYSRvbkjfo8/play?usp=sharing 
 ## 1\. Dominio elegido y por qué
 
 Nutrición, porque (a) existen documentos públicos y fiables (guías alimentarias oficiales, informes de organismos de salud), (b) las preguntas son factuales y verificables —encaja con RAG— y (c) en una conversación real mezclan preguntas técnicas con charla general, lo que justifica un **RAG condicional**.
