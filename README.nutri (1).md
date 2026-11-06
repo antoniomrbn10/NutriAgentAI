@@ -3,7 +3,8 @@
 Agente conversacional experto en **nutrición y alimentación saludable**, construido con **Gemini** (LLM \+ embeddings), **ChromaDB**, **LangChain** y **LangGraph**. Decide por sí mismo cuándo consultar su base de conocimiento y cuándo responder directamente, y recuerda la conversación.
 
 > Dominio de ejemplo: se puede cambiar a cualquier otro editando `DOMAIN_*`, `SYSTEM_PROMPT`, `ROUTER_PROMPT` (en `rag_agent.py`) y los documentos de `docs/`.
-
+## ENLACE A INTERFAZ DE STREAMLIT: https://nutriagentai-kyiba2pnfad2ltyngnhdkk.streamlit.app/#nutri-guia
+> 
 ## 1\. Dominio elegido y por qué
 
 Nutrición, porque (a) existen documentos públicos y fiables (guías alimentarias oficiales, informes de organismos de salud), (b) las preguntas son factuales y verificables —encaja con RAG— y (c) en una conversación real mezclan preguntas técnicas con charla general, lo que justifica un **RAG condicional**.
